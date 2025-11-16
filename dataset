@@ -6,7 +6,7 @@
 # This script processes raw SCImago data into clean working datasets
 # 
 # BEFORE RUNNING:
-# 1. Download data from SCImago (see DATA_DOWNLOAD.md)
+# 1. Download data from SCImago (see readme.md)
 # 2. Save files with EXACT names below in ./data/raw/
 # 3. Run this script: source("data_preparation.R")
 
