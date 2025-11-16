@@ -13,7 +13,7 @@ Go to https://www.scimagojr.com/journalrank.php and download 4 files:
 
 ### File 2: scimagojr_2015_oa.csv
 - Keep year: 2015
-- Under "Open Access" filter, check: Gold + Subsidized OA
+- Click 'only open access journals'
 - Click "Download journal list in this page"
 - Save as: data/raw/scimagojr_2015_oa.csv
 
@@ -25,7 +25,7 @@ Go to https://www.scimagojr.com/journalrank.php and download 4 files:
 
 ### File 4: scimagojr_2024_oa.csv
 - Keep year: 2024
-- Under "Open Access" filter, check: Gold + Subsidized OA
+- Click 'only open access journals'
 - Click "Download journal list in this page"
 - Save as: data/raw/scimagojr_2024_oa.csv
 
