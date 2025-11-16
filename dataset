@@ -1,0 +1,405 @@
+##############################################################
+# DATA PREPARATION SCRIPT
+# Scopus-Indexed Journals in ASEAN and East Asia (2015-2024)
+##############################################################
+
+# This script processes raw SCImago data into clean working datasets
+# 
+# BEFORE RUNNING:
+# 1. Download data from SCImago (see DATA_DOWNLOAD.md)
+# 2. Save files with EXACT names below in ./data/raw/
+# 3. Run this script: source("data_preparation.R")
+
+options(scipen=60000)
+library(dplyr)
+library(tidyr)
+
+##############################################################
+# FILE PATHS - DO NOT CHANGE THESE NAMES
+##############################################################
+
+# These are the exact filenames you must use after downloading from SCImago
+# Save all files in ./data/raw/ directory
+
+RAW_DATA_DIR <- "./data/raw"
+OUTPUT_DIR <- "./data/processed"
+
+# Required input files (you must download and save with these exact names):
+FILE_2015_ALL <- file.path(RAW_DATA_DIR, "scimagojr_2015_all.csv")
+FILE_2015_OA <- file.path(RAW_DATA_DIR, "scimagojr_2015_oa.csv")
+FILE_2024_ALL <- file.path(RAW_DATA_DIR, "scimagojr_2024_all.csv")
+FILE_2024_OA <- file.path(RAW_DATA_DIR, "scimagojr_2024_oa.csv")
+
+# Check if files exist
+cat("Checking for required files...\n")
+required_files <- c(FILE_2015_ALL, FILE_2015_OA, FILE_2024_ALL, FILE_2024_OA)
+missing_files <- required_files[!file.exists(required_files)]
+
+if(length(missing_files) > 0) {
+  cat("\n❌ ERROR: Missing required files:\n")
+  for(f in missing_files) {
+    cat("  -", basename(f), "\n")
+  }
+  cat("\nPlease download SCImago data and save with exact filenames.\n")
+  cat("See DATA_DOWNLOAD.md for instructions.\n\n")
+  stop("Required data files not found")
+}
+
+cat("✓ All required files found\n\n")
+
+# Create output directory
+dir.create(OUTPUT_DIR, showWarnings = FALSE, recursive = TRUE)
+
+##############################################################
+# COUNTRY DEFINITIONS
+##############################################################
+
+# ASEAN countries with 10+ Scopus-indexed journals in 2024
+asean_countries <- c("Indonesia", "Malaysia", "Philippines", "Singapore", "Thailand")
+
+# East Asian countries with 10+ Scopus-indexed journals in 2024  
+east_asian_countries <- c("China", "Hong Kong", "Japan", "South Korea", "Taiwan")
+
+# Note: Excluded countries with <10 journals in 2024 for statistical robustness:
+# ASEAN excluded: Brunei Darussalam (2), Vietnam (4), Cambodia, Laos, Myanmar (0 each)
+# East Asia excluded: Mongolia (2), North Korea (0)
+
+##############################################################
+# FUNCTION TO CLEAN SJR DATA
+##############################################################
+
+clean_sjr_data <- function(file_path) {
+  
+  cat("Reading:", basename(file_path), "\n")
+  
+  # Read semicolon-delimited file from SCImago
+  data <- read.delim(file_path, sep=";", header=TRUE, fill=TRUE)
+  
+  cat("  Raw rows:", nrow(data), "\n")
+  
+  # Rename columns by NAME, not by index
+  # Find and rename the quartile column
+  quar_col <- which(colnames(data) == "SJR.Best.Quartile")
+  if(length(quar_col) > 0) {
+    colnames(data)[quar_col] <- "QUAR"
+    cat("  ✓ Renamed SJR.Best.Quartile → QUAR\n")
+  }
+  
+  # Find and rename other columns if they exist
+  if("Total.Docs...2015." %in% colnames(data)) {
+    colnames(data)[which(colnames(data) == "Total.Docs...2015.")] <- "TD2015"
+    cat("  ✓ Renamed Total.Docs...2015. → TD2015\n")
+  }
+  if("Total.Docs...2024." %in% colnames(data)) {
+    colnames(data)[which(colnames(data) == "Total.Docs...2024.")] <- "TD2024"
+    cat("  ✓ Renamed Total.Docs...2024. → TD2024\n")
+  }
+  if("H.index" %in% colnames(data)) {
+    colnames(data)[which(colnames(data) == "H.index")] <- "HI"
+    cat("  ✓ Renamed H.index → HI\n")
+  }
+  if("Total.Citations..3years." %in% colnames(data)) {
+    colnames(data)[which(colnames(data) == "Total.Citations..3years.")] <- "CITES"
+  }
+  if("Citations...Doc...2years." %in% colnames(data)) {
+    colnames(data)[which(colnames(data) == "Citations...Doc...2years.")] <- "CITES2YR"
+  }
+  
+  # Clean numeric columns - handle both comma and period decimal marks
+  if("SJR" %in% colnames(data)) {
+    if(!is.numeric(data$SJR)) {
+      data$SJR <- as.numeric(gsub(",", ".", data$SJR))
+      cat("  ✓ Converted SJR to numeric\n")
+    }
+  }
+  
+  if("CITES2YR" %in% colnames(data)) {
+    if(!is.numeric(data$CITES2YR)) {
+      data$CITES2YR <- as.numeric(gsub(",", ".", data$CITES2YR))
+    }
+  }
+  
+  # Clean quartile data - handle "Q1", "Q2", etc. format
+  if("QUAR" %in% colnames(data)) {
+    data$QUAR <- gsub("Q", "", data$QUAR)    # "Q1" → "1"
+    data$QUAR <- gsub("-", NA, data$QUAR)    # "-" → NA
+    data$QUAR <- as.integer(data$QUAR)       # Convert to integer
+    cat("  ✓ Cleaned quartile values (Q1→1, Q2→2, etc.)\n")
+  }
+  
+  cat("  ✓ Cleaning complete\n\n")
+  return(data)
+}
+
+##############################################################
+# FUNCTION TO ADD OA STATUS
+##############################################################
+
+add_oa_status <- function(main_data, oa_file_path) {
+  
+  cat("Adding OA status...\n")
+  cat("  Main dataset:", nrow(main_data), "journals\n")
+  
+  # Read and clean OA data
+  oa_data <- clean_sjr_data(oa_file_path)
+  oa_titles <- oa_data %>% select(Title)
+  
+  cat("  OA dataset:", nrow(oa_titles), "journals\n")
+  
+  # Classify journals as OA or non-OA
+  oa_journals <- merge(main_data, oa_titles, by="Title") %>% 
+    mutate(oa_status="OA")
+  
+  non_oa_journals <- anti_join(main_data, oa_data, by = "Title") %>% 
+    mutate(oa_status="non-OA")
+  
+  result <- rbind(oa_journals, non_oa_journals)
+  
+  cat("  Result: OA =", sum(result$oa_status == "OA"), 
+      "| non-OA =", sum(result$oa_status == "non-OA"), "\n\n")
+  
+  return(result)
+}
+
+##############################################################
+# PUBLISHER NAME NORMALIZATION
+##############################################################
+
+# Expanded list of substrings to remove
+substrings_to_remove <- c(
+  " AG$", " A\\.?S\\.?$", " A\\.?C\\.?$", " AS$", " APS$", " ASCR$", 
+  " A\\.?I\\.?$", " B\\.?V\\.$", " C\\.?V\\.$", " C\\.?S\\.?$", " e\\.?V\\.$", 
+  " GmbH$", " Inc\\.?$", " KGaA$", " KG$", " Ltd\\.?$", " L\\.?L\\.?C\\.?$", 
+  " LP$", " LTDA$", " LLC$", " mij\\.?$", " N\\.?V\\.$", " o\\.?p\\.?s$", 
+  " OOO$", " P\\.?L\\.?C\\.?$", " plc$", " Pty\\.?$", " S\\.?A\\.?$", 
+  " S\\.?A\\.? de C\\.?V\\.$", " S\\.?A\\.?R\\.?L\\.?$", " S\\.?C\\.?S\\.?$", 
+  " S\\.?L\\.?$", " S\\.?L\\.?U\\.?$", " S\\.?p\\.?A\\.?$", " S\\.?R\\.?L\\.?$",
+  " s\\.?r\\.?l\\.?$", " s\\.?r\\.?o\\.?$", " SpA$", " ZRt\\.?$", 
+  " v\\.?z\\.?w\\.?$", " Z\\.?S\\.?$", " z\\.?o\\.?o\\.?$", " EOOD$"
+)
+
+remove_university_suffixes <- function(text) {
+  # Remove common publishing/press suffixes
+  text <- gsub(" Press$", "", text, ignore.case = TRUE)
+  text <- gsub(" Publishing$", "", text, ignore.case = TRUE)
+  
+  # Handle complex university names
+  text <- gsub("University of ([^-]+) - .*", "University of \\1", text)
+  
+  # Handle both "University of [Name]" and "[Name] University" patterns
+  if (grepl("^University of", text, ignore.case = TRUE)) {
+    text <- gsub("^(University of [^,]*?)\\s+(Faculty|Department|College).*", 
+                 "\\1", text, ignore.case = TRUE)
+  } else {
+    text <- gsub("(.*University).*", "\\1", text)
+  }
+  
+  return(trimws(text))
+}
+
+remove_substrings <- function(text, substrings) {
+  # Remove trailing commas and hyphens
+  text <- gsub("[,-]+$", "", text)
+  
+  # Remove substrings from the list
+  for (substring in substrings) {
+    pattern <- paste0(substring, "$")
+    text <- sub(pattern, "", text)
+  }
+  
+  # Remove everything after a hyphen
+  text <- gsub(" - .*", "", text)
+  
+  # Remove qualifying phrases after a comma
+  text <- gsub(", .*", "", text)
+  
+  # Trim whitespace
+  text <- trimws(text)
+  
+  # Add university name normalization FIRST
+  text <- remove_university_suffixes(text)
+  
+  # THEN do Science China normalization
+  if (trimws(tolower(text)) == "science" || 
+      grepl("science china", text, ignore.case = TRUE)) {
+    text <- "Science China Press"
+  }
+  
+  # Standardize other known publishers
+  if (grepl("Springer", text, ignore.case = TRUE)) {
+    text <- "Springer"
+  }
+  if (grepl("Elsevier", text, ignore.case = TRUE)) {
+    text <- "Elsevier"
+  }
+  if (grepl("Wiley", text, ignore.case = TRUE)) {
+    text <- "Wiley"
+  }
+  if (grepl("Taylor", text, ignore.case = TRUE) & 
+      grepl("Francis", text, ignore.case = TRUE)) {
+    text <- "Taylor and Francis"
+  }
+  if (grepl("Cambridge", text, ignore.case = TRUE)) {
+    text <- "Cambridge University Press"
+  }
+  if (grepl("Oxford", text, ignore.case = TRUE)) {
+    text <- "Oxford University Press"
+  }
+  if (grepl("KeAi", text, ignore.case = TRUE)) {
+    text <- "KeAi Communications"
+  }
+  if (trimws(tolower(text)) == "world scientific" || 
+      grepl("world scientific publishing", text, ignore.case = TRUE)) {
+    text <- "World Scientific"
+  }
+  
+  return(trimws(text))
+}
+
+normalize_publisher <- function(publisher_names) {
+  normalized <- sapply(publisher_names, function(name) {
+    if (is.na(name) || name == "") return(name)
+    remove_substrings(name, substrings_to_remove)
+  })
+  return(unname(normalized))
+}
+
+##############################################################
+# MAIN PROCESSING PIPELINE
+##############################################################
+
+cat("\n")
+cat("═══════════════════════════════════════════════════════════\n")
+cat("DATA PREPARATION: RAW SCIMAGO → CLEAN DATASETS\n")
+cat("═══════════════════════════════════════════════════════════\n\n")
+
+##############################################################
+# PROCESS 2015 DATA
+##############################################################
+
+cat("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
+cat("PROCESSING 2015 DATA\n")
+cat("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n")
+
+# Load raw data
+s15 <- clean_sjr_data(FILE_2015_ALL)
+
+# Filter by regions
+cat("Filtering by regions...\n")
+asean_2015 <- s15 %>% filter(Country %in% asean_countries)
+east_asia_2015 <- s15 %>% filter(Country %in% east_asian_countries)
+
+cat("  ASEAN:", nrow(asean_2015), "journals\n")
+cat("  East Asia:", nrow(east_asia_2015), "journals\n\n")
+
+# Add OA status
+cat("Adding OA status to ASEAN...\n")
+asean_15 <- add_oa_status(asean_2015, FILE_2015_OA)
+
+cat("Adding OA status to East Asia...\n")
+east_15 <- add_oa_status(east_asia_2015, FILE_2015_OA)
+
+# Normalize publisher names
+cat("Normalizing publisher names...\n")
+asean_15$Publisher_normalized <- normalize_publisher(asean_15$Publisher)
+east_15$Publisher_normalized <- normalize_publisher(east_15$Publisher)
+
+# Show example transformations
+example_pubs <- head(asean_15$Publisher[!is.na(asean_15$Publisher)], 2)
+example_norm <- normalize_publisher(example_pubs)
+cat("  Examples:\n")
+for(i in 1:length(example_pubs)) {
+  cat("    Before:", example_pubs[i], "\n")
+  cat("    After: ", example_norm[i], "\n\n")
+}
+
+# Save processed datasets
+write.csv(asean_15, 
+          file.path(OUTPUT_DIR, "asean_journals_2015.csv"), 
+          row.names = FALSE, fileEncoding = "UTF-8")
+
+write.csv(east_15, 
+          file.path(OUTPUT_DIR, "eastasia_journals_2015.csv"), 
+          row.names = FALSE, fileEncoding = "UTF-8")
+
+cat("✓ 2015 datasets saved\n\n")
+
+##############################################################
+# PROCESS 2024 DATA
+##############################################################
+
+cat("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
+cat("PROCESSING 2024 DATA\n")
+cat("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n")
+
+# Load raw data
+s24 <- clean_sjr_data(FILE_2024_ALL)
+
+# Filter by regions
+cat("Filtering by regions...\n")
+asean_2024 <- s24 %>% filter(Country %in% asean_countries)
+east_asia_2024 <- s24 %>% filter(Country %in% east_asian_countries)
+
+cat("  ASEAN:", nrow(asean_2024), "journals\n")
+cat("  East Asia:", nrow(east_asia_2024), "journals\n\n")
+
+# Add OA status
+cat("Adding OA status to ASEAN...\n")
+asean_24 <- add_oa_status(asean_2024, FILE_2024_OA)
+
+cat("Adding OA status to East Asia...\n")
+east_24 <- add_oa_status(east_asia_2024, FILE_2024_OA)
+
+# Normalize publisher names
+cat("Normalizing publisher names...\n")
+asean_24$Publisher_normalized <- normalize_publisher(asean_24$Publisher)
+east_24$Publisher_normalized <- normalize_publisher(east_24$Publisher)
+
+# Save processed datasets
+write.csv(asean_24, 
+          file.path(OUTPUT_DIR, "asean_journals_2024.csv"), 
+          row.names = FALSE, fileEncoding = "UTF-8")
+
+write.csv(east_24, 
+          file.path(OUTPUT_DIR, "eastasia_journals_2024.csv"), 
+          row.names = FALSE, fileEncoding = "UTF-8")
+
+cat("✓ 2024 datasets saved\n\n")
+
+##############################################################
+# SUMMARY
+##############################################################
+
+cat("═══════════════════════════════════════════════════════════\n")
+cat("DATA PREPARATION COMPLETE\n")
+cat("═══════════════════════════════════════════════════════════\n\n")
+
+cat("Output location:", OUTPUT_DIR, "\n\n")
+
+cat("Files created:\n")
+cat("  1. asean_journals_2015.csv      (", nrow(asean_15), " journals)\n")
+cat("  2. asean_journals_2024.csv      (", nrow(asean_24), " journals)\n")
+cat("  3. eastasia_journals_2015.csv   (", nrow(east_15), " journals)\n")
+cat("  4. eastasia_journals_2024.csv   (", nrow(east_24), " journals)\n\n")
+
+cat("What was done:\n")
+cat("  ✓ Cleaned column names from SCImago format\n")
+cat("  ✓ Converted quartiles (Q1→1, Q2→2, Q3→3, Q4→4)\n")
+cat("  ✓ Fixed numeric formats (comma→period decimals)\n")
+cat("  ✓ Filtered to study countries (5 ASEAN + 5 East Asia)\n")
+cat("  ✓ Added OA classification (OA vs non-OA)\n")
+cat("  ✓ Normalized publisher names (removed corporate suffixes)\n\n")
+
+cat("OA Summary:\n")
+cat("  ASEAN 2015:     OA =", sum(asean_15$oa_status == "OA"), 
+    "| non-OA =", sum(asean_15$oa_status == "non-OA"), "\n")
+cat("  ASEAN 2024:     OA =", sum(asean_24$oa_status == "OA"), 
+    "| non-OA =", sum(asean_24$oa_status == "non-OA"), "\n")
+cat("  East Asia 2015: OA =", sum(east_15$oa_status == "OA"), 
+    "| non-OA =", sum(east_15$oa_status == "non-OA"), "\n")
+cat("  East Asia 2024: OA =", sum(east_24$oa_status == "OA"), 
+    "| non-OA =", sum(east_24$oa_status == "non-OA"), "\n\n")
+
+cat("These are the exact working datasets used for all\n")
+cat("analyses in the published paper.\n")
+cat("═══════════════════════════════════════════════════════════\n")
